@@ -12,7 +12,7 @@
 
 #define CAN_2515
 //change these pin numbers if they dont match your configuration
-const int SPI_CS_PIN = 9; 
+const int SPI_CS_PIN = 10;
 const int CAN_INT_PIN = 2;
 
 #ifdef CAN_2515
@@ -34,7 +34,7 @@ mcp2515_can CAN(SPI_CS_PIN); // Set CS pin
 #define T_MAX 18.0f
 
 // Set actuator values
-#define ACTUATOR_ID 1
+#define ACTUATOR_ID 0x01
 float p_in = 0.0f; // position target
 float v_in = 0.0f; //velocity target 
 float kp_in = 20.0f; // stiffness target (proportional gain)
@@ -52,6 +52,7 @@ unsigned long printInterval = 50; // serial prints every 50 ms
 
 void setup() {
     Serial.begin(115200);
+    pinMode(CAN_INT_PIN, INPUT);
     delay(1000);
 
     while (CAN_OK != CAN.begin(CAN_1000KBPS)) {             // init can bus : baudrate = 1000k
@@ -74,11 +75,13 @@ void loop() {
             receivedFloat = Serial.parseFloat();
             Serial.print("Position set to: ");
             Serial.println(receivedFloat);
-            p_in = constrain(receivedFloat, P_MIN, P_MAX); 
+            p_in = constrain(receivedFloat, P_MIN, P_MAX);
+            // Send data
+            packCmd();
             Serial.flush();
             break;
           case 'M':
-            //Posistion
+            //State
             receivedBool = Serial.parseInt();
             if(receivedBool){
               Serial.println("Enabled");
@@ -96,11 +99,10 @@ void loop() {
         }
     }
 
-  // Send data
-  packCmd();
-
-  // Receive data
-  unpackReply();
+  if(!digitalRead(CAN_INT_PIN)){
+      // Receive data
+      unpackReply();
+  }
 
   // Print data
   if(millis() - previousMillis <= printInterval){
@@ -115,7 +117,7 @@ void loop() {
       Serial.print("\t");
       Serial.println(t_out);
     }
-  
+
 }
 
 
@@ -131,7 +133,12 @@ void EnterMotorMode() {
   buf[5] = 0xFF;
   buf[6] = 0xFF;
   buf[7] = 0xFC;
-  CAN.sendMsgBuf(0x01, 0, 8, buf);
+  if(CAN.sendMsgBuf(ACTUATOR_ID, 0, 8, buf) == CAN_OK){
+      Serial.println("Packet sent");
+  }
+  else{
+      Serial.println("Error while sending packet");
+  }
 }
 
 void ExitMotorMode() {
@@ -145,7 +152,12 @@ void ExitMotorMode() {
   buf[5] = 0xFF;
   buf[6] = 0xFF;
   buf[7] = 0xFD;
-  CAN.sendMsgBuf(0x01, 0, 8, buf);
+  if(CAN.sendMsgBuf(ACTUATOR_ID, 0, 8, buf) == CAN_OK){
+      Serial.println("Packet sent");
+  }
+  else{
+      Serial.println("Error while sending packet");
+  }
 }
 
 void Zero() {
@@ -159,7 +171,12 @@ void Zero() {
   buf[5] = 0xFF;
   buf[6] = 0xFF;
   buf[7] = 0xFE;
-  CAN.sendMsgBuf(0x01, 0, 8, buf);
+  if(CAN.sendMsgBuf(ACTUATOR_ID, 0, 8, buf) == CAN_OK){
+      Serial.println("Packet sent");
+  }
+  else{
+      Serial.println("Error while sending packet");
+  }
 }
 
 void packCmd() {
@@ -179,16 +196,16 @@ void packCmd() {
   //     5: [kd[11-4]]
   //     6: [kd[3-0], torque[11-8]]
   //     7: [torque[7-0]]
-   
+
   byte buf[8];
-  
+
   /// limit data to be within bounds ///
   float p_des = constrain(p_in, P_MIN, P_MAX); // desired position
   float v_des = constrain(v_in, V_MIN, V_MAX); // desired velocity
   float kp = constrain(kp_in, KP_MIN, KP_MAX); // desired stiffness
   float kd = constrain(kd_in, KD_MIN, KD_MAX); // desired dampening
   float t_ff = constrain(t_in, T_MIN, T_MAX); // feed forward torque
-  
+
   /// convert floats to unsigned ints ///
   unsigned int p_int = float_to_uint(p_des, P_MIN, P_MAX, 16);
   unsigned int v_int = float_to_uint(v_des, V_MIN, V_MAX, 12);
@@ -205,7 +222,12 @@ void packCmd() {
   buf[5] = kd_int >> 4;
   buf[6] = ((kd_int & 0xF) << 4) | (t_int >> 8);
   buf[7] = t_int & 0xFF;
-  CAN.sendMsgBuf(0x01, 0, 8, buf);
+  if(CAN.sendMsgBuf(ACTUATOR_ID, 0, 8, buf) == CAN_OK){
+      Serial.println("Packet sent");
+  }
+  else{
+      Serial.println("Error while sending packet");
+  }
 }
 
 
@@ -230,15 +252,13 @@ void unpackReply(){
     if (CAN_MSGAVAIL == CAN.checkReceive()) {         // check if data coming
         CAN.readMsgBuf(&len, buf);    // read data,  len: data length, buf: data buf
 
-        unsigned long canId = CAN.getCanId();
-
         // unpack data from can buffer
         unsigned int id = buf[0];
         unsigned int p_int = (buf[1] << 8) | buf[2]; // position data
         unsigned int v_int = (buf[3] << 4) | (buf[4] >> 4); // velocity data
         unsigned int i_int = ((buf[4] & 0xF) << 8) | buf[5]; // torque data
 
-        if(canId == ACTUATOR_ID){
+        if(id == ACTUATOR_ID){
           // then convert uint to floats
           p_out = uint_to_float(p_int, P_MIN, P_MAX, 16);
           v_out = uint_to_float(v_int, V_MIN, V_MAX, 12);
